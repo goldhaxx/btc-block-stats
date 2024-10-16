@@ -1,4 +1,5 @@
 import os
+import sys
 import requests
 import psycopg2
 import time
@@ -10,8 +11,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Fetch environment variables
-RPC_URL = os.getenv("RPC_URL_3")  # Can be changed to RPC_URL_2, RPC_URL_3, etc.
-AUTH_TOKEN = os.getenv("RPC_URL_3_API_KEY", None)  # Get the auth token (if any)
+RPC_URL = os.getenv("ANKR_RPC_URL")  # Can be changed to any RPC_URL in .env file
+AUTH_TOKEN = os.getenv("ANKR_API_KEY", None)  # Get the auth token (if any)
 DB_HOST = os.getenv("DB_HOST")
 DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
@@ -80,6 +81,7 @@ def store_block_headers(cursor, block_headers):
             block_headers['nextblockhash']
         ))
         logging.info(f"Block {block_headers['block_height']} header stored in the database.")
+        print(f"Block {block_headers['block_height']} committed to the database", end='\r', flush=True)
     except psycopg2.DatabaseError as e:
         logging.error(f"Error storing block {block_headers['block_height']} in database: {e}")
         raise
@@ -170,7 +172,7 @@ def collect_block_headers(rpc_url, auth_token=None):
                 break  # Stop the loop if no more block hashes are available
 
             # Sleep to avoid rate limiting or overloading the server
-            time.sleep(0.1)
+            # time.sleep(0.1)
 
     except KeyboardInterrupt:
         logging.warning("Script interrupted by user.")
@@ -182,5 +184,8 @@ def collect_block_headers(rpc_url, auth_token=None):
 if __name__ == "__main__":
     rpc_url = RPC_URL
     auth_token = AUTH_TOKEN if AUTH_TOKEN else None  # Use None if no auth token is required
+
+    # Set stdout to unbuffered
+    sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)
 
     collect_block_headers(rpc_url, auth_token)

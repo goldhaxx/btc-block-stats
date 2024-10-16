@@ -1,4 +1,5 @@
 import os
+import sys
 import requests
 import psycopg2
 import time
@@ -9,8 +10,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Fetch environment variables
-RPC_URL_2 = os.getenv("RPC_URL_2")
-RPC_URL_2_API_KEY = os.getenv("RPC_URL_2_API_KEY")
+RPC_URL = os.getenv("ANKR_RPC_URL")
+RPC_API_KEY = os.getenv("ANKR_API_KEY")
 DB_HOST = os.getenv("DB_HOST")
 DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
@@ -48,6 +49,7 @@ def store_block_hash(cursor, block_height, block_hash):
             ON CONFLICT (block_height) DO NOTHING
         ''', (block_height, block_hash))
         logging.info(f"Block hash for height {block_height} stored in the database.")
+        print(f"Block {block_height} committed to the database", end='\r', flush=True)
     except psycopg2.DatabaseError as e:
         logging.error(f"Error storing block hash for height {block_height}: {e}")
         raise
@@ -157,7 +159,7 @@ def collect_block_hashes(rpc_url, auth_token=None):
                 logging.info(f"Block hash for height {block_height} committed to the database.")
 
             # Sleep to avoid rate limiting or overloading the server
-            time.sleep(0.1)
+            # time.sleep(0.1)
 
     except KeyboardInterrupt:
         logging.warning("Script interrupted by user.")
@@ -167,7 +169,10 @@ def collect_block_hashes(rpc_url, auth_token=None):
         logging.info("Database connection closed.")
 
 if __name__ == "__main__":
-    rpc_url = RPC_URL_2
-    auth_token = RPC_URL_2_API_KEY if RPC_URL_2_API_KEY else None  # Use None if no auth token is required
+    rpc_url = RPC_URL
+    auth_token = RPC_API_KEY if RPC_API_KEY else None  # Use None if no auth token is required
+
+    # Set stdout to unbuffered
+    sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)
 
     collect_block_hashes(rpc_url, auth_token)
