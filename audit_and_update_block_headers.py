@@ -3,11 +3,10 @@ import sys
 import requests
 import time
 import logging
-from datetime import datetime
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
-# Load environment variables from .env file
+# Load environment variables
 load_dotenv()
 
 # Fetch environment variables
@@ -18,7 +17,7 @@ SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 
 # Set up logging
 logging.basicConfig(
-    filename='./logs/block_headers.log',
+    filename='./logs/audit_and_update_block_headers.log',
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
@@ -26,35 +25,16 @@ logging.basicConfig(
 # Initialize Supabase client
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
-def get_highest_block_height():
+def get_missing_block_headers():
     try:
-        response = supabase.rpc('get_highest_block_height_from_block_headers').execute()
-        result = response.data
-        return result if result is not None else -1  # Start from -1 if no records
+        response = supabase.rpc('audit_missing_block_heights').execute()
+        if response.data:
+            for item in response.data:
+                if item['table_name'] == 'block_headers':
+                    return [int(h.strip()) for h in item['missing_block_heights'].split(',')]
+        return []
     except Exception as e:
-        logging.error(f"Error getting highest block height: {e}")
-        raise
-
-def get_block_count(rpc_url, auth_token=None):
-    headers = {"Content-Type": "application/json"}
-    if auth_token:
-        headers["Authorization"] = f"Bearer {auth_token}"
-
-    payload = {
-        "jsonrpc": "2.0",
-        "id": "1",
-        "method": "getblockcount",
-        "params": []
-    }
-
-    try:
-        response = requests.post(rpc_url, headers=headers, json=payload)
-        response.raise_for_status()
-        result = response.json().get('result')
-        logging.info(f"Current block height is {result}.")
-        return result
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Failed to fetch current block height: {e}")
+        logging.error(f"Error fetching missing block headers: {e}")
         raise
 
 def fetch_block_header(block_height, rpc_url, auth_token=None):
@@ -65,8 +45,8 @@ def fetch_block_header(block_height, rpc_url, auth_token=None):
     payload = {
         "jsonrpc": "2.0",
         "id": "getblockheader",
-        "method": "getblockheader",
-        "params": [block_height, True]  # True to get verbose output
+        "method": "getblockhash",
+        "params": [block_height]
     }
 
     retry_delay = 60
@@ -77,12 +57,27 @@ def fetch_block_header(block_height, rpc_url, auth_token=None):
             response = requests.post(rpc_url, headers=headers, json=payload)
 
             if response.status_code == 200:
-                result = response.json().get('result')
-                query_time = time.time() - start_time
-                logging.info(f"Block header for height {block_height} fetched in {query_time:.2f} sec.")
-                return result
+                block_hash = response.json().get('result')
+                
+                # Now fetch the block header using the hash
+                header_payload = {
+                    "jsonrpc": "2.0",
+                    "id": "getblockheader",
+                    "method": "getblockheader",
+                    "params": [block_hash, True]
+                }
+                header_response = requests.post(rpc_url, headers=headers, json=header_payload)
+                
+                if header_response.status_code == 200:
+                    result = header_response.json().get('result')
+                    query_time = time.time() - start_time
+                    logging.info(f"Block header for height {block_height} fetched in {query_time:.2f} sec.")
+                    return result
+                else:
+                    logging.error(f"Non-200 response code {header_response.status_code} for getblockheader. Retrying in {retry_delay} sec...")
+                    time.sleep(retry_delay)
             else:
-                logging.error(f"Non-200 response code {response.status_code}. Retrying in {retry_delay} sec...")
+                logging.error(f"Non-200 response code {response.status_code} for getblockhash. Retrying in {retry_delay} sec...")
                 time.sleep(retry_delay)
 
         except requests.exceptions.RequestException as e:
@@ -109,7 +104,7 @@ def store_block_header(block_header):
             'next_block_hash': block_header.get('nextblockhash', '')
         }).execute()
 
-        if response.data:
+        if response.data is not None:
             logging.info(f"Block header for height {block_header['height']} stored in the database.")
             print(f"Block {block_header['height']} committed to the database", end='\r', flush=True)
         else:
@@ -119,30 +114,30 @@ def store_block_header(block_header):
         logging.error(f"Error storing block header for height {block_header['height']}: {e}")
         raise
 
-def collect_block_headers(rpc_url, auth_token=None):
+def audit_and_update_block_headers(rpc_url, auth_token=None):
     try:
-        start_block = get_highest_block_height() + 1
-        logging.info(f"Starting block header fetch from {start_block}")
+        missing_heights = get_missing_block_headers()
+        total_missing = len(missing_heights)
+        logging.info(f"Found {total_missing} missing block headers.")
+        print(f"Found {total_missing} missing block headers.")
 
-        end_block = get_block_count(rpc_url, auth_token)
-
-        for block_height in range(start_block, end_block + 1):
-            block_header = fetch_block_header(block_height, rpc_url, auth_token)
+        for i, height in enumerate(missing_heights, 1):
+            block_header = fetch_block_header(height, rpc_url, auth_token)
             if block_header:
                 store_block_header(block_header)
-                logging.info(f"Block {block_height} header committed to the database.")
+                logging.info(f"Processed and stored block header {i}/{total_missing} - Block {height}")
+                print(f"Processed {i}/{total_missing} - Block {height}", end='\r', flush=True)
 
-    except KeyboardInterrupt:
-        logging.warning("Script interrupted by user.")
+        print("\nAll missing block headers processed.")
     except Exception as e:
         logging.error(f"An error occurred: {e}")
-    finally:
-        logging.info("Script execution completed.")
+        print(f"An error occurred: {e}")
 
 if __name__ == "__main__":
     rpc_url = RPC_URL
     auth_token = RPC_API_KEY if RPC_API_KEY else None
 
+    # Set stdout to unbuffered
     sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)
 
-    collect_block_headers(rpc_url, auth_token)
+    audit_and_update_block_headers(rpc_url, auth_token)

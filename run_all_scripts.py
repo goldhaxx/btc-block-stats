@@ -2,19 +2,20 @@ import subprocess
 import sys
 import os
 import requests
-import psycopg2
 from dotenv import load_dotenv
 from tqdm import tqdm
+from supabase import create_client, Client
 
 # Load environment variables
 load_dotenv()
 
 RPC_URL = os.getenv("ANKR_RPC_URL")
 RPC_API_KEY = os.getenv("ANKR_API_KEY")
-DB_HOST = os.getenv("DB_HOST")
-DB_USER = os.getenv("DB_USER")
-DB_PASSWORD = os.getenv("DB_PASSWORD")
-DB_NAME = os.getenv("DB_NAME")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+
+# Initialize Supabase client
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 def get_current_block_height():
     headers = {"Content-Type": "application/json"}
@@ -35,13 +36,9 @@ def get_current_block_height():
         raise Exception(f"Failed to get current block height: {response.text}")
 
 def get_db_block_height(table_name):
-    conn = psycopg2.connect(dbname=DB_NAME, user=DB_USER, password=DB_PASSWORD, host=DB_HOST)
-    cursor = conn.cursor()
-    cursor.execute(f'SELECT MAX(block_height) FROM {table_name}')
-    result = cursor.fetchone()[0]
-    cursor.close()
-    conn.close()
-    return result if result is not None else 0
+    rpc_function = f'get_highest_block_height_from_{table_name}'
+    response = supabase.rpc(rpc_function).execute()
+    return response.data if response.data is not None else 0
 
 def run_script(script_name, current_height, db_height):
     print(f"\n--- Running {script_name} ---")

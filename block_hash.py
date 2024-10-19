@@ -1,10 +1,10 @@
 import os
 import sys
 import requests
-import psycopg2
 import time
 import logging
 from dotenv import load_dotenv
+from supabase import create_client, Client
 
 # Load environment variables from .env file
 load_dotenv()
@@ -12,10 +12,8 @@ load_dotenv()
 # Fetch environment variables
 RPC_URL = os.getenv("ANKR_RPC_URL")
 RPC_API_KEY = os.getenv("ANKR_API_KEY")
-DB_HOST = os.getenv("DB_HOST")
-DB_USER = os.getenv("DB_USER")
-DB_PASSWORD = os.getenv("DB_PASSWORD")
-DB_NAME = os.getenv("DB_NAME")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 
 # Set up logging
 logging.basicConfig(
@@ -24,37 +22,67 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
-# Database connection (PostgreSQL)
-def create_connection():
+# Initialize Supabase client
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+
+def get_highest_block_height():
     try:
-        conn = psycopg2.connect(
-            dbname=DB_NAME,
-            user=DB_USER,
-            password=DB_PASSWORD,
-            host=DB_HOST,
-            port="5432"
-        )
-        logging.info("Database connection established.")
-        return conn
-    except psycopg2.DatabaseError as e:
-        logging.error(f"Error connecting to the database: {e}")
+        response = supabase.rpc('get_highest_block_height_from_block_hashes').execute()
+        result = response.data
+        return result if result is not None else 0
+    except Exception as e:
+        logging.error(f"Error getting highest block height: {e}")
         raise
 
-# Function to store block hashes in the PostgreSQL database
-def store_block_hash(cursor, block_height, block_hash):
+def get_block_count(rpc_url, auth_token=None):
+    headers = {
+        "Content-Type": "application/json",
+    }
+
+    if auth_token:  # Add Authorization header if token exists
+        headers["Authorization"] = f"Bearer {auth_token}"
+
+    payload = {
+        "jsonrpc": "2.0",
+        "id": "1",
+        "method": "getblockcount",
+        "params": []
+    }
+
     try:
-        cursor.execute('''
-            INSERT INTO block_hashes (block_height, block_hash)
-            VALUES (%s, %s)
-            ON CONFLICT (block_height) DO NOTHING
-        ''', (block_height, block_hash))
-        logging.info(f"Block hash for height {block_height} stored in the database.")
-        print(f"Block {block_height} committed to the database", end='\r', flush=True)
-    except psycopg2.DatabaseError as e:
+        logging.debug(f"Sending request to {rpc_url} with headers: {headers}")
+        logging.debug(f"Request payload: {payload}")
+
+        response = requests.post(rpc_url, headers=headers, json=payload)
+        response.raise_for_status()
+
+        logging.debug(f"Response status code: {response.status_code}")
+        logging.debug(f"Response body: {response.text}")
+
+        result = response.json().get('result')
+        logging.info(f"Current block height is {result}.")
+        return result
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Failed to fetch current block height: {e}")
+        raise
+
+def store_block_hash(block_height, block_hash):
+    try:
+        response = supabase.rpc('insert_block_hash', {
+            'block_height': block_height,
+            'block_hash': block_hash
+        }).execute()
+
+        if response.data:
+            logging.info(f"Block hash for height {block_height} stored in the database.")
+            print(f"Block {block_height} committed to the database", end='\r', flush=True)
+        else:
+            logging.warning(f"No data returned when inserting block hash for height {block_height}.")
+
+    except Exception as e:
         logging.error(f"Error storing block hash for height {block_height}: {e}")
         raise
 
-# Function to fetch block hashes from the Bitcoin RPC API with advanced logging
 def fetch_block_hash(block_height, rpc_url, auth_token=None):
     headers = {
         "Content-Type": "application/json",
@@ -99,74 +127,25 @@ def fetch_block_hash(block_height, rpc_url, auth_token=None):
             logging.error(f"Failed to fetch block hash for height {block_height}: {e}. Retrying in {retry_delay} sec...")
             time.sleep(retry_delay)
 
-# Function to get the highest block height currently in the block_hashes table
-def get_highest_block_height(cursor):
-    cursor.execute('SELECT MAX(block_height) FROM block_hashes')
-    result = cursor.fetchone()
-    return result[0] if result[0] is not None else 0  # Start from 0 if no records
-
-# Function to get the current BTC block height with advanced logging
-def get_block_count(rpc_url, auth_token=None):
-    headers = {
-        "Content-Type": "application/json",
-    }
-
-    if auth_token:  # Add Authorization header if token exists
-        headers["Authorization"] = f"Bearer {auth_token}"
-
-    payload = {
-        "jsonrpc": "2.0",
-        "id": "1",
-        "method": "getblockcount",
-        "params": []
-    }
-
-    try:
-        logging.debug(f"Sending request to {rpc_url} with headers: {headers}")
-        logging.debug(f"Request payload: {payload}")
-
-        response = requests.post(rpc_url, headers=headers, json=payload)
-        response.raise_for_status()
-
-        logging.debug(f"Response status code: {response.status_code}")
-        logging.debug(f"Response body: {response.text}")
-
-        result = response.json().get('result')
-        logging.info(f"Current block height is {result}.")
-        return result
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Failed to fetch current block height: {e}")
-        raise
-
-# Main function to pull block hashes and store them
 def collect_block_hashes(rpc_url, auth_token=None):
-    conn = create_connection()
-    cursor = conn.cursor()
-
     try:
-        # Get the highest block height in the database to start from the next block
-        start_block = get_highest_block_height(cursor) + 1
+        start_block = get_highest_block_height() + 1
         logging.info(f"Starting block hash fetch from {start_block}")
 
-        # Get the latest block height to use as the ceiling
         end_block = get_block_count(rpc_url, auth_token)
 
         for block_height in range(start_block, end_block + 1):
             block_hash = fetch_block_hash(block_height, rpc_url, auth_token)
             if block_hash:
-                store_block_hash(cursor, block_height, block_hash)
-                conn.commit()
+                store_block_hash(block_height, block_hash)
                 logging.info(f"Block hash for height {block_height} committed to the database.")
-
-            # Sleep to avoid rate limiting or overloading the server
-            # time.sleep(0.1)
 
     except KeyboardInterrupt:
         logging.warning("Script interrupted by user.")
+    except Exception as e:
+        logging.error(f"An error occurred: {e}")
     finally:
-        cursor.close()
-        conn.close()
-        logging.info("Database connection closed.")
+        logging.info("Script execution completed.")
 
 if __name__ == "__main__":
     rpc_url = RPC_URL
