@@ -12,12 +12,16 @@ load_dotenv()
 # Fetch environment variables
 RPC_URL = os.getenv("ANKR_RPC_URL")
 RPC_API_KEY = os.getenv("ANKR_API_KEY")
-SUPABASE_URL = "https://nzeegmjntzmihrgsdvqm.supabase.co"
-SUPABASE_API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im56ZWVnbWpudHptaWhyZ3NkdnFtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Mjg0NDM5NTYsImV4cCI6MjA0NDAxOTk1Nn0.J9o9efFs81RdHxeUkrWaFsY32Rrp7hLM-DyqZXzI1f8"
+SUPABASE_URL = os.getenv("SUPABASE_PRODUCTION_URL")
+SUPABASE_API_KEY = os.getenv("SUPABASE_PRODUCTION_SERVICE_KEY")
+
+# Ensure logs directory exists
+log_dir = os.path.join(os.path.dirname(__file__), 'logs')
+os.makedirs(log_dir, exist_ok=True)
 
 # Set up logging
 logging.basicConfig(
-    filename='./logs/audit_and_update_block_headers.log',
+    filename=os.path.join(log_dir, 'audit_and_update_block_headers.log'),
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
@@ -29,9 +33,19 @@ def get_missing_block_headers():
     try:
         response = supabase.rpc('audit_missing_block_heights').execute()
         if response.data:
+            logging.info(f"Received data from audit_missing_block_heights: {response.data}")
             for item in response.data:
                 if item['table_name'] == 'block_headers':
-                    return [int(h.strip()) for h in item['missing_block_heights'].split(',')]
+                    missing_heights_str = item.get('missing_block_heights') or ''
+                    if missing_heights_str:
+                        missing_heights_list = [int(h.strip()) for h in missing_heights_str.split(',')]
+                        return missing_heights_list
+                    else:
+                        logging.info("No missing block heights found.")
+                        return []
+            logging.warning("No matching table_name 'block_headers' found in response data.")
+        else:
+            logging.warning("No data returned from audit_missing_block_heights.")
         return []
     except Exception as e:
         logging.error(f"Error fetching missing block headers: {e}")

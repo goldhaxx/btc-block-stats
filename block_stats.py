@@ -6,27 +6,31 @@ import logging
 from datetime import datetime
 from dotenv import load_dotenv
 from supabase import create_client, Client
+import json
+
+# **DEBUG MODE VARIABLE**
+DEBUG_MODE = False  # Set to True to enable detailed logging, False to disable
 
 # Load environment variables from .env file
 load_dotenv()
 
 # Fetch environment variables
 RPC_URL = os.getenv("ANKR_RPC_URL")
-RPC_API_KEY = os.getenv("ANKR_API_KEY")
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+RPC_API_KEY = os.getenv("")
+SUPABASE_URL = os.getenv("SUPABASE_PRODUCTION_URL")
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_PRODUCTION_SERVICE_KEY")
 
 # Set up logging
+log_level = logging.DEBUG if DEBUG_MODE else logging.INFO
 logging.basicConfig(
     filename='./logs/block_stats.log',
-    level=logging.INFO,
+    level=log_level,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
 # Initialize Supabase client
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
-# Function to get the highest block height currently in the database
 def get_highest_block_height():
     try:
         response = supabase.rpc('get_highest_block_height_from_block_stats').execute()
@@ -36,7 +40,6 @@ def get_highest_block_height():
         logging.error(f"Error getting highest block height: {e}")
         raise
 
-# Function to get the current BTC block height
 def get_block_count(rpc_url, auth_token=None):
     headers = {"Content-Type": "application/json"}
     if auth_token:
@@ -50,8 +53,19 @@ def get_block_count(rpc_url, auth_token=None):
     }
 
     try:
+        if DEBUG_MODE:
+            logging.debug(f"Attempting to fetch current block height from {rpc_url}")
+            logging.debug(f"Request payload: {json.dumps(payload, indent=2)}")
+        
         response = requests.post(rpc_url, headers=headers, json=payload)
+        
+        if DEBUG_MODE:
+            logging.debug(f"Response status code: {response.status_code}")
+            logging.debug(f"Response headers: {json.dumps(dict(response.headers), indent=2)}")
+            logging.debug(f"Response body: {json.dumps(response.json(), indent=2)}")
+        
         response.raise_for_status()
+        
         result = response.json().get('result')
         logging.info(f"Current block height is {result}.")
         return result
@@ -59,7 +73,6 @@ def get_block_count(rpc_url, auth_token=None):
         logging.error(f"Failed to fetch current block height: {e}")
         raise
 
-# Function to insert data into the database using Supabase RPC
 def store_block_stats(block_stats):
     try:
         response = supabase.rpc('insert_block_stat', {
@@ -92,17 +105,17 @@ def store_block_stats(block_stats):
             'utxo_size_inc_actual': block_stats['utxo_size_inc_actual']
         }).execute()
 
-        if response.data:
+        if response.error is None:
             logging.info(f"Block {block_stats['block_height']} stored in the database.")
-            print(f"Block {block_stats['block_height']} committed to the database", end='\r', flush=True)
+            print(f"Block {block_stats['block_height']} committed to the database", flush=True)
         else:
-            logging.warning(f"No data returned when inserting block {block_stats['block_height']}.")
+            logging.error(f"Error storing block {block_stats['block_height']}: {response.error}")
+            raise Exception(f"Supabase error: {response.error}")
 
     except Exception as e:
         logging.error(f"Error storing block {block_stats['block_height']} in database: {e}")
         raise
 
-# API interaction with retry logic and advanced logging
 def fetch_block_stats(block_height, rpc_url, auth_token=None):
     headers = {"Content-Type": "application/json"}
     if auth_token:
@@ -120,10 +133,23 @@ def fetch_block_stats(block_height, rpc_url, auth_token=None):
     while True:  # Retry loop
         try:
             start_time = time.time()
+
+            if DEBUG_MODE:
+                logging.debug(f"Sending getblockstats request to BTC RPC for block height {block_height}")
+                logging.debug(f"Request payload: {json.dumps(payload, indent=2)}")
+            
             response = requests.post(rpc_url, headers=headers, json=payload)
 
-            if response.status_code == 200:
-                result = response.json().get('result')
+            if DEBUG_MODE:
+                logging.debug(f"Response status code: {response.status_code}")
+                logging.debug(f"Response headers: {json.dumps(dict(response.headers), indent=2)}")
+                logging.debug(f"Response body: {json.dumps(response.json(), indent=2)}")
+
+            response.raise_for_status()
+
+            response_json = response.json()
+            result = response_json.get('result')
+            if result:
                 query_time = time.time() - start_time
                 logging.info(f"Block {block_height} fetched in {query_time:.2f} sec.")
                 return {
@@ -156,28 +182,43 @@ def fetch_block_stats(block_height, rpc_url, auth_token=None):
                     'utxo_size_inc_actual': result.get('utxo_size_inc_actual')
                 }
             else:
-                logging.error(f"Non-200 response code {response.status_code}. Retrying in {retry_delay} sec...")
+                logging.warning(f"Empty result received for block height {block_height}. Retrying in {retry_delay} sec...")
                 time.sleep(retry_delay)
 
         except requests.exceptions.RequestException as e:
-            logging.error(f"Failed to fetch block {block_height}: {e}. Retrying in {retry_delay} sec...")
+            logging.error(f"Failed to fetch block {block_height}: {e}")
+            if DEBUG_MODE and e.response is not None:
+                logging.debug(f"Response status code: {e.response.status_code}")
+                logging.debug(f"Response headers: {json.dumps(dict(e.response.headers), indent=2)}")
+                logging.debug(f"Response body: {e.response.text}")
+            logging.error(f"Retrying in {retry_delay} sec...")
             time.sleep(retry_delay)
 
-# Main function to pull data from the highest block in the database to the latest block
 def collect_block_data(rpc_url, auth_token=None):
     try:
-        # Get the highest block height in the database
         start_block = get_highest_block_height() + 1
         logging.info(f"Starting block fetch from {start_block}")
 
-        # Get the latest block height to use as the ceiling
         end_block = get_block_count(rpc_url, auth_token)
+        logging.info(f"Current block height is {end_block}. Will fetch {end_block - start_block + 1} blocks.")
+
+        if start_block > end_block:
+            logging.warning(f"Start block ({start_block}) is greater than end block ({end_block}). No new blocks to fetch.")
+            return
 
         for block_height in range(start_block, end_block + 1):
-            block_stats = fetch_block_stats(block_height, rpc_url, auth_token)
-            if block_stats:
-                store_block_stats(block_stats)
-                logging.info(f"Block {block_height} committed to the database.")
+            logging.info(f"Attempting to fetch block stats for height {block_height}")
+            try:
+                block_stats = fetch_block_stats(block_height, rpc_url, auth_token)
+                if block_stats:
+                    logging.info(f"Attempting to store block stats for height {block_height}")
+                    store_block_stats(block_stats)
+                    logging.info(f"Block {block_height} stats successfully processed and stored.")
+                else:
+                    logging.error(f"Failed to fetch block stats for height {block_height}: Received empty result")
+            except Exception as e:
+                logging.error(f"Error processing block {block_height}: {e}")
+                # Optionally, you might want to add a retry mechanism here
 
     except KeyboardInterrupt:
         logging.warning("Script interrupted by user.")
