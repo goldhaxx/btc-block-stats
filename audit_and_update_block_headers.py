@@ -12,8 +12,8 @@ load_dotenv()
 # Fetch environment variables
 RPC_URL = os.getenv("ANKR_RPC_URL")
 RPC_API_KEY = os.getenv("ANKR_API_KEY")
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+SUPABASE_URL = "https://nzeegmjntzmihrgsdvqm.supabase.co"
+SUPABASE_API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im56ZWVnbWpudHptaWhyZ3NkdnFtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Mjg0NDM5NTYsImV4cCI6MjA0NDAxOTk1Nn0.J9o9efFs81RdHxeUkrWaFsY32Rrp7hLM-DyqZXzI1f8"
 
 # Set up logging
 logging.basicConfig(
@@ -23,7 +23,7 @@ logging.basicConfig(
 )
 
 # Initialize Supabase client
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_API_KEY)
 
 def get_missing_block_headers():
     try:

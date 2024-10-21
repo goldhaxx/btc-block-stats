@@ -17,3 +17,4 @@ btc-block_headers.sql
 btc-block_stats.sql
 /supabase/
 Supabase.postman_collection.json
+db_backup.dump
